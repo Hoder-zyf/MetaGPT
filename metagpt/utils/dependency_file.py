@@ -13,9 +13,7 @@ import re
 from pathlib import Path
 from typing import Set
 
-import aiofiles
-
-from metagpt.utils.common import aread
+from metagpt.utils.common import aread, awrite
 from metagpt.utils.exceptions import handle_exception
 
 
@@ -45,8 +43,7 @@ class DependencyFile:
     async def save(self):
         """Save dependencies to the file asynchronously."""
         data = json.dumps(self._dependencies)
-        async with aiofiles.open(str(self._filename), mode="w") as writer:
-            await writer.write(data)
+        await awrite(filename=self._filename, data=data)
 
     async def update(self, filename: Path | str, dependencies: Set[Path | str], persist=True):
         """Update dependencies for a file asynchronously.
@@ -94,7 +91,7 @@ class DependencyFile:
         try:
             key = Path(filename).relative_to(root).as_posix()
         except ValueError:
-            key = filename
+            key = Path(filename).as_posix()
         return set(self._dependencies.get(str(key), {}))
 
     def delete_file(self):

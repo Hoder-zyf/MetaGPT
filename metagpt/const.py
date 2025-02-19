@@ -1,14 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""
-@Time    : 2023/5/1 11:59
-@Author  : alexanderwu
-@File    : const.py
-@Modified By: mashenquan, 2023-11-1. According to Section 2.2.1 and 2.2.2 of RFC 116, added key definitions for
-        common properties in the Message.
-@Modified By: mashenquan, 2023-11-27. Defines file repository paths according to Section 2.2.3.4 of RFC 135.
-@Modified By: mashenquan, 2023/12/5. Add directories for code summarization..
-"""
+
 import os
 from pathlib import Path
 
@@ -49,7 +41,10 @@ METAGPT_ROOT = get_metagpt_root()  # Dependent on METAGPT_PROJECT_ROOT
 DEFAULT_WORKSPACE_ROOT = METAGPT_ROOT / "workspace"
 
 EXAMPLE_PATH = METAGPT_ROOT / "examples"
+EXAMPLE_DATA_PATH = EXAMPLE_PATH / "data"
 DATA_PATH = METAGPT_ROOT / "data"
+DABENCH_PATH = EXAMPLE_PATH / "di/InfiAgent-DABench/data"
+EXAMPLE_BENCHMARK_PATH = EXAMPLE_PATH / "data/rag_bm"
 TEST_DATA_PATH = METAGPT_ROOT / "tests/data"
 RESEARCH_PATH = DATA_PATH / "research"
 TUTORIAL_PATH = DATA_PATH / "tutorial_docx"
@@ -84,7 +79,6 @@ MESSAGE_ROUTE_TO_NONE = "<none>"
 REQUIREMENT_FILENAME = "requirement.txt"
 BUGFIX_FILENAME = "bugfix.txt"
 PACKAGE_REQUIREMENTS_FILENAME = "requirements.txt"
-CODE_PLAN_AND_CHANGE_FILENAME = "code_plan_and_change.json"
 
 DOCS_FILE_REPO = "docs"
 PRDS_FILE_REPO = "docs/prd"
@@ -105,6 +99,7 @@ CODE_SUMMARIES_PDF_FILE_REPO = "resources/code_summary"
 RESOURCES_FILE_REPO = "resources"
 SD_OUTPUT_FILE_REPO = "resources/sd_output"
 GRAPH_REPO_FILE_REPO = "docs/graph_repo"
+VISUAL_GRAPH_REPO_FILE_REPO = "resources/graph_db"
 CLASS_VIEW_FILE_REPO = "docs/class_view"
 
 YAPI_URL = "http://yapi.deepwisdomai.com/"
@@ -122,7 +117,6 @@ BASE64_FORMAT = "base64"
 
 # REDIS
 REDIS_KEY = "REDIS_KEY"
-LLM_API_TIMEOUT = 300
 
 # Message id
 IGNORED_MESSAGE_ID = "0"
@@ -131,3 +125,7 @@ IGNORED_MESSAGE_ID = "0"
 GENERALIZATION = "Generalize"
 COMPOSITION = "Composite"
 AGGREGATION = "Aggregate"
+
+# Timeout
+USE_CONFIG_TIMEOUT = 0  # Using llm.timeout configuration.
+LLM_API_TIMEOUT = 300

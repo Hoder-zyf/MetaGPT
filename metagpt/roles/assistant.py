@@ -65,7 +65,7 @@ class Assistant(Role):
             prompt += f"If the text explicitly want you to {desc}, return `[SKILL]: {name}` brief and clear. For instance: [SKILL]: {name}\n"
         prompt += 'Otherwise, return `[TALK]: {talk}` brief and clear. For instance: if {talk} is "xxxx" return [TALK]: xxxx\n\n'
         prompt += f"Now what specific action is explicitly mentioned in the text: {last_talk}\n"
-        rsp = await self.llm.aask(prompt, ["You are an action classifier"])
+        rsp = await self.llm.aask(prompt, ["You are an action classifier"], stream=False)
         logger.info(f"THINK: {prompt}\n, THINK RESULT: {rsp}\n")
         return await self._plan(rsp, last_talk=last_talk)
 
@@ -136,4 +136,4 @@ class Assistant(Role):
         try:
             self.memory = BrainMemory(**m)
         except Exception as e:
-            logger.exception(f"load error:{e}, data:{jsn}")
+            logger.exception(f"load error:{e}, data:{m}")

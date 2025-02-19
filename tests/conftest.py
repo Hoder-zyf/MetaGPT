@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import uuid
+from pathlib import Path
 from typing import Callable
 
 import aiohttp.web
@@ -112,12 +113,13 @@ def proxy():
         while not reader.at_eof():
             writer.write(await reader.read(2048))
         writer.close()
+        await writer.wait_closed()
 
     async def handle_client(reader, writer):
         data = await reader.readuntil(b"\r\n\r\n")
-        print(f"Proxy: {data}")  # checking with capfd fixture
         infos = pattern.match(data)
         host, port = infos.group("host"), infos.group("port")
+        print(f"Proxy: {host}")  # checking with capfd fixture
         port = int(port) if port else 80
         remote_reader, remote_writer = await asyncio.open_connection(host, port)
         if data.startswith(b"CONNECT"):
@@ -256,10 +258,10 @@ def http_server():
         server = aiohttp.web.Server(handler)
         runner = aiohttp.web.ServerRunner(server)
         await runner.setup()
-        site = aiohttp.web.TCPSite(runner, "localhost", 0)
+        site = aiohttp.web.TCPSite(runner, "127.0.0.1", 0)
         await site.start()
-        host, port = site._server.sockets[0].getsockname()
-        return site, f"http://{host}:{port}"
+        _, port, *_ = site._server.sockets[0].getsockname()
+        return site, f"http://127.0.0.1:{port}"
 
     return start
 
@@ -270,3 +272,11 @@ def mermaid_mocker(aiohttp_mocker, mermaid_rsp_cache):
     aiohttp_mocker.rsp_cache = mermaid_rsp_cache
     aiohttp_mocker.check_funcs = check_funcs
     yield check_funcs
+
+
+@pytest.fixture
+def git_dir():
+    """Fixture to get the unittest directory."""
+    git_dir = Path(__file__).parent / f"unittest/{uuid.uuid4().hex}"
+    git_dir.mkdir(parents=True, exist_ok=True)
+    return git_dir

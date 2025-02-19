@@ -6,10 +6,11 @@
 @Modified By: mashenquan, 2023/11/21. Fix bug: ReadTimeout.
 @Modified By: mashenquan, 2023/12/1. Fix bug: Unclosed connection caused by openai 0.x.
 """
+from __future__ import annotations
 
 import json
 import re
-from typing import AsyncIterator, Optional, Union
+from typing import Optional, Union
 
 from openai import APIConnectionError, AsyncOpenAI, AsyncStream
 from openai._base_client import AsyncHttpxClientWrapper
@@ -24,48 +25,45 @@ from tenacity import (
 )
 
 from metagpt.configs.llm_config import LLMConfig, LLMType
+from metagpt.const import USE_CONFIG_TIMEOUT
 from metagpt.logs import log_llm_stream, logger
 from metagpt.provider.base_llm import BaseLLM
 from metagpt.provider.constant import GENERAL_FUNCTION_SCHEMA
 from metagpt.provider.llm_provider_registry import register_provider
-from metagpt.schema import Message
-from metagpt.utils.common import CodeParser, decode_image
-from metagpt.utils.cost_manager import CostManager, Costs
+from metagpt.utils.common import CodeParser, decode_image, log_and_reraise
+from metagpt.utils.cost_manager import CostManager
 from metagpt.utils.exceptions import handle_exception
 from metagpt.utils.token_counter import (
-    count_message_tokens,
-    count_string_tokens,
+    count_input_tokens,
+    count_output_tokens,
     get_max_completion_tokens,
 )
 
 
-def log_and_reraise(retry_state):
-    logger.error(f"Retry attempts exhausted. Last exception: {retry_state.outcome.exception()}")
-    logger.warning(
-        """
-Recommend going to https://deepwisdom.feishu.cn/wiki/MsGnwQBjiif9c3koSJNcYaoSnu4#part-XdatdVlhEojeAfxaaEZcMV3ZniQ
-See FAQ 5.8
-"""
-    )
-    raise retry_state.outcome.exception()
-
-
-@register_provider(LLMType.OPENAI)
+@register_provider(
+    [
+        LLMType.OPENAI,
+        LLMType.FIREWORKS,
+        LLMType.OPEN_LLM,
+        LLMType.MOONSHOT,
+        LLMType.MISTRAL,
+        LLMType.YI,
+        LLMType.OPENROUTER,
+    ]
+)
 class OpenAILLM(BaseLLM):
     """Check https://platform.openai.com/examples for examples"""
 
     def __init__(self, config: LLMConfig):
         self.config = config
-        self._init_model()
         self._init_client()
         self.auto_max_tokens = False
         self.cost_manager: Optional[CostManager] = None
 
-    def _init_model(self):
-        self.model = self.config.model  # Used in _calc_usage & _cons_kwargs
-
     def _init_client(self):
         """https://github.com/openai/openai-python#async-usage"""
+        self.model = self.config.model  # Used in _calc_usage & _cons_kwargs
+        self.pricing_plan = self.config.pricing_plan or self.model
         kwargs = self._make_client_kwargs()
         self.aclient = AsyncOpenAI(**kwargs)
 
@@ -87,37 +85,72 @@ class OpenAILLM(BaseLLM):
 
         return params
 
-    async def _achat_completion_stream(self, messages: list[dict], timeout=3) -> AsyncIterator[str]:
+    async def _achat_completion_stream(self, messages: list[dict], timeout=USE_CONFIG_TIMEOUT) -> str:
         response: AsyncStream[ChatCompletionChunk] = await self.aclient.chat.completions.create(
-            **self._cons_kwargs(messages, timeout=timeout), stream=True
+            **self._cons_kwargs(messages, timeout=self.get_timeout(timeout)), stream=True
         )
-
+        usage = None
+        collected_messages = []
+        has_finished = False
         async for chunk in response:
             chunk_message = chunk.choices[0].delta.content or "" if chunk.choices else ""  # extract the message
-            yield chunk_message
+            finish_reason = (
+                chunk.choices[0].finish_reason if chunk.choices and hasattr(chunk.choices[0], "finish_reason") else None
+            )
+            log_llm_stream(chunk_message)
+            collected_messages.append(chunk_message)
+            chunk_has_usage = hasattr(chunk, "usage") and chunk.usage
+            if has_finished:
+                # for oneapi, there has a usage chunk after finish_reason not none chunk
+                if chunk_has_usage:
+                    usage = CompletionUsage(**chunk.usage) if isinstance(chunk.usage, dict) else chunk.usage
+            if finish_reason:
+                if chunk_has_usage:
+                    # Some services have usage as an attribute of the chunk, such as Fireworks
+                    if isinstance(chunk.usage, CompletionUsage):
+                        usage = chunk.usage
+                    else:
+                        usage = CompletionUsage(**chunk.usage)
+                elif hasattr(chunk.choices[0], "usage"):
+                    # The usage of some services is an attribute of chunk.choices[0], such as Moonshot
+                    usage = CompletionUsage(**chunk.choices[0].usage)
+                has_finished = True
 
-    def _cons_kwargs(self, messages: list[dict], timeout=3, **extra_kwargs) -> dict:
+        log_llm_stream("\n")
+        full_reply_content = "".join(collected_messages)
+        if not usage:
+            # Some services do not provide the usage attribute, such as OpenAI or OpenLLM
+            usage = self._calc_usage(messages, full_reply_content)
+
+        self._update_costs(usage)
+        return full_reply_content
+
+    def _cons_kwargs(self, messages: list[dict], timeout=USE_CONFIG_TIMEOUT, **extra_kwargs) -> dict:
         kwargs = {
             "messages": messages,
             "max_tokens": self._get_max_tokens(messages),
-            "n": 1,
+            # "n": 1,  # Some services do not provide this parameter, such as mistral
             # "stop": None,  # default it's None and gpt4-v can't have this one
-            "temperature": 0.3,
+            "temperature": self.config.temperature,
             "model": self.model,
-            "timeout": max(self.config.timeout, timeout),
+            "timeout": self.get_timeout(timeout),
         }
+        if "o1-" in self.model:
+            # compatible to openai o1-series
+            kwargs["temperature"] = 1
+            kwargs.pop("max_tokens")
         if extra_kwargs:
             kwargs.update(extra_kwargs)
         return kwargs
 
-    async def _achat_completion(self, messages: list[dict], timeout=3) -> ChatCompletion:
-        kwargs = self._cons_kwargs(messages, timeout=timeout)
+    async def _achat_completion(self, messages: list[dict], timeout=USE_CONFIG_TIMEOUT) -> ChatCompletion:
+        kwargs = self._cons_kwargs(messages, timeout=self.get_timeout(timeout))
         rsp: ChatCompletion = await self.aclient.chat.completions.create(**kwargs)
         self._update_costs(rsp.usage)
         return rsp
 
-    async def acompletion(self, messages: list[dict], timeout=3) -> ChatCompletion:
-        return await self._achat_completion(messages, timeout=timeout)
+    async def acompletion(self, messages: list[dict], timeout=USE_CONFIG_TIMEOUT) -> ChatCompletion:
+        return await self._achat_completion(messages, timeout=self.get_timeout(timeout))
 
     @retry(
         wait=wait_random_exponential(min=1, max=60),
@@ -126,63 +159,24 @@ class OpenAILLM(BaseLLM):
         retry=retry_if_exception_type(APIConnectionError),
         retry_error_callback=log_and_reraise,
     )
-    async def acompletion_text(self, messages: list[dict], stream=False, timeout=3) -> str:
+    async def acompletion_text(self, messages: list[dict], stream=False, timeout=USE_CONFIG_TIMEOUT) -> str:
         """when streaming, print each token in place."""
         if stream:
-            resp = self._achat_completion_stream(messages, timeout=timeout)
+            return await self._achat_completion_stream(messages, timeout=timeout)
 
-            collected_messages = []
-            async for i in resp:
-                log_llm_stream(i)
-                collected_messages.append(i)
-            log_llm_stream("\n")
-
-            full_reply_content = "".join(collected_messages)
-            usage = self._calc_usage(messages, full_reply_content)
-            self._update_costs(usage)
-            return full_reply_content
-
-        rsp = await self._achat_completion(messages, timeout=timeout)
+        rsp = await self._achat_completion(messages, timeout=self.get_timeout(timeout))
         return self.get_choice_text(rsp)
 
-    def _func_configs(self, messages: list[dict], timeout=3, **kwargs) -> dict:
-        """Note: Keep kwargs consistent with https://platform.openai.com/docs/api-reference/chat/create"""
-        if "tools" not in kwargs:
-            configs = {"tools": [{"type": "function", "function": GENERAL_FUNCTION_SCHEMA}]}
-            kwargs.update(configs)
-
-        return self._cons_kwargs(messages=messages, timeout=timeout, **kwargs)
-
-    def _process_message(self, messages: Union[str, Message, list[dict], list[Message], list[str]]) -> list[dict]:
-        """convert messages to list[dict]."""
-        # 全部转成list
-        if not isinstance(messages, list):
-            messages = [messages]
-
-        # 转成list[dict]
-        processed_messages = []
-        for msg in messages:
-            if isinstance(msg, str):
-                processed_messages.append({"role": "user", "content": msg})
-            elif isinstance(msg, dict):
-                assert set(msg.keys()) == set(["role", "content"])
-                processed_messages.append(msg)
-            elif isinstance(msg, Message):
-                processed_messages.append(msg.to_dict())
-            else:
-                raise ValueError(
-                    f"Only support message type are: str, Message, dict, but got {type(messages).__name__}!"
-                )
-        return processed_messages
-
-    async def _achat_completion_function(self, messages: list[dict], timeout=3, **chat_configs) -> ChatCompletion:
-        messages = self._process_message(messages)
-        kwargs = self._func_configs(messages=messages, timeout=timeout, **chat_configs)
+    async def _achat_completion_function(
+        self, messages: list[dict], timeout: int = USE_CONFIG_TIMEOUT, **chat_configs
+    ) -> ChatCompletion:
+        messages = self.format_msg(messages)
+        kwargs = self._cons_kwargs(messages=messages, timeout=self.get_timeout(timeout), **chat_configs)
         rsp: ChatCompletion = await self.aclient.chat.completions.create(**kwargs)
         self._update_costs(rsp.usage)
         return rsp
 
-    async def aask_code(self, messages: list[dict], **kwargs) -> dict:
+    async def aask_code(self, messages: list[dict], timeout: int = USE_CONFIG_TIMEOUT, **kwargs) -> dict:
         """Use function of tools to ask a code.
         Note: Keep kwargs consistent with https://platform.openai.com/docs/api-reference/chat/create
 
@@ -192,12 +186,15 @@ class OpenAILLM(BaseLLM):
         >>> rsp = await llm.aask_code(msg)
         # -> {'language': 'python', 'code': "print('Hello, World!')"}
         """
+        if "tools" not in kwargs:
+            configs = {"tools": [{"type": "function", "function": GENERAL_FUNCTION_SCHEMA}]}
+            kwargs.update(configs)
         rsp = await self._achat_completion_function(messages, **kwargs)
         return self.get_choice_function_arguments(rsp)
 
     def _parse_arguments(self, arguments: str) -> dict:
         """parse arguments in openai function call"""
-        if "langugae" not in arguments and "code" not in arguments:
+        if "language" not in arguments and "code" not in arguments:
             logger.warning(f"Not found `code`, `language`, We assume it is pure code:\n {arguments}\n. ")
             return {"language": "python", "code": arguments}
 
@@ -265,22 +262,12 @@ class OpenAILLM(BaseLLM):
             return usage
 
         try:
-            usage.prompt_tokens = count_message_tokens(messages, self.model)
-            usage.completion_tokens = count_string_tokens(rsp, self.model)
+            usage.prompt_tokens = count_input_tokens(messages, self.pricing_plan)
+            usage.completion_tokens = count_output_tokens(rsp, self.pricing_plan)
         except Exception as e:
             logger.warning(f"usage calculation failed: {e}")
 
         return usage
-
-    @handle_exception
-    def _update_costs(self, usage: CompletionUsage):
-        if self.config.calc_usage and usage and self.cost_manager:
-            self.cost_manager.update_cost(usage.prompt_tokens, usage.completion_tokens, self.model)
-
-    def get_costs(self) -> Costs:
-        if not self.cost_manager:
-            return Costs(0, 0, 0, 0)
-        return self.cost_manager.get_costs()
 
     def _get_max_tokens(self, messages: list[dict]):
         if not self.auto_max_tokens:

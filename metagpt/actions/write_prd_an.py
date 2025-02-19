@@ -56,7 +56,7 @@ REFINED_PRODUCT_GOALS = ActionNode(
     key="Refined Product Goals",
     expected_type=List[str],
     instruction="Update and expand the original product goals to reflect the evolving needs due to incremental "
-    "development.Ensure that the refined goals align with the current project direction and contribute to its success.",
+    "development. Ensure that the refined goals align with the current project direction and contribute to its success.",
     example=[
         "Enhance user engagement through new features",
         "Optimize performance for scalability",
@@ -133,10 +133,10 @@ REQUIREMENT_ANALYSIS = ActionNode(
 REFINED_REQUIREMENT_ANALYSIS = ActionNode(
     key="Refined Requirement Analysis",
     expected_type=List[str],
-    instruction="Review and refine the existing requirement analysis to align with the evolving needs of the project "
+    instruction="Review and refine the existing requirement analysis into a string list to align with the evolving needs of the project "
     "due to incremental development. Ensure the analysis comprehensively covers the new features and enhancements "
     "required for the refined project scope.",
-    example=["Require add/update/modify ..."],
+    example=["Require add ...", "Require modify ..."],
 )
 
 REQUIREMENT_POOL = ActionNode(

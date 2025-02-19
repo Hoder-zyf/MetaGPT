@@ -134,7 +134,7 @@ class CollectLinks(Action):
                     break
 
         model_name = config.llm.model
-        prompt = reduce_message_length(gen_msg(), model_name, system_text, 4096)
+        prompt = reduce_message_length(gen_msg(), model_name, system_text, config.llm.max_token)
         logger.debug(prompt)
         queries = await self._aask(prompt, [system_text])
         try:
@@ -161,6 +161,8 @@ class CollectLinks(Action):
         """
         max_results = max(num_results * 2, 6)
         results = await self.search_engine.run(query, max_results=max_results, as_string=False)
+        if len(results) == 0:
+            return []
         _results = "\n".join(f"{i}: {j}" for i, j in zip(range(max_results), results))
         prompt = COLLECT_AND_RANKURLS_PROMPT.format(topic=topic, query=query, results=_results)
         logger.debug(prompt)
